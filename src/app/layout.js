@@ -1,5 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import Script from "next/script";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -12,13 +13,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Gemini P5 Editor",
-  description: "Generate p5.js code with Gemini",
+  title: "Camera Tracking App",
+  description: "Track objects with camera and Gemini AI",
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
+      <head>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
