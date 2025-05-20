@@ -200,9 +200,19 @@ export default function CameraTracker() {
             yMin: (yMin / 1000) * canvasRef.current.height,
             xMax: (xMax / 1000) * canvasRef.current.width,
             yMax: (yMax / 1000) * canvasRef.current.height
+          },
+          associatedPoints: [], // Initialize array to store associated points
+          initialBox: {  // Store initial box position to calculate relative movement
+            xMin: (xMin / 1000) * canvasRef.current.width,
+            yMin: (yMin / 1000) * canvasRef.current.height,
+            xMax: (xMax / 1000) * canvasRef.current.width,
+            yMax: (yMax / 1000) * canvasRef.current.height
           }
         };
       });
+
+      // Associate tracking points with detections
+      associatePointsWithDetections(processedDetections);
 
       // Set all detections at once
       setDetections(processedDetections);
@@ -210,6 +220,29 @@ export default function CameraTracker() {
       console.error('Error calling API:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+  
+  // Associate tracking points with detection bounding boxes
+  const associatePointsWithDetections = (detections) => {
+    if (!pointCountRef.current) return;
+    
+    for (const detection of detections) {
+      for (let i = 0; i < pointCountRef.current; i++) {
+        const origX = origxyRef.current[i * 2];
+        const origY = origxyRef.current[i * 2 + 1];
+        
+        // Check if the original point position is inside the bounding box
+        if (origX >= detection.box.xMin && 
+            origX <= detection.box.xMax && 
+            origY >= detection.box.yMin && 
+            origY <= detection.box.yMax) {
+          // Associate this point with the detection
+          detection.associatedPoints.push(i);
+        }
+      }
+      
+      console.log(`Detection "${detection.label}" has ${detection.associatedPoints.length} associated points`);
     }
   };
   
@@ -287,6 +320,9 @@ export default function CameraTracker() {
       trackPoints(canvas);
     }
     
+    // Update bounding box positions based on associated tracking points
+    updateDetectionBoxes();
+    
     // Draw detections with rectangles and labels
     ctx.font = '24px Arial';
     ctx.textAlign = 'left';
@@ -322,6 +358,16 @@ export default function CameraTracker() {
             detection.box.xMin + 5, 
             detection.box.yMin - textHeight + 5
           );
+          
+          // Optionally display the number of associated points
+          if (detection.associatedPoints && detection.associatedPoints.length > 0) {
+            const pointText = `${detection.associatedPoints.length} points`;
+            ctx.fillText(
+              pointText,
+              detection.box.xMin + 5,
+              detection.box.yMax + 5
+            );
+          }
         }
       }
     });
@@ -498,6 +544,9 @@ export default function CameraTracker() {
     }
     console.log('Points before pruning:', pointDetails);
     
+    // Create a map to track point index changes
+    const pointIndexMap = new Map();
+    
     for (let inputPoint = 0; inputPoint < pointCountRef.current; inputPoint++) {
       // Status 1 means successfully tracked, anything else means couldn't track
       if (pointStatusRef.current[inputPoint] === 1) {
@@ -511,6 +560,8 @@ export default function CameraTracker() {
           origxyRef.current[outputIndex] = origxyRef.current[inputIndex];
           origxyRef.current[outputIndex + 1] = origxyRef.current[inputIndex + 1];
         }
+        // Record the new index for this point
+        pointIndexMap.set(inputPoint, outputPoint);
         outputPoint++;
       } else {
         removed++;
@@ -520,9 +571,74 @@ export default function CameraTracker() {
     // Log if we're removing points
     if (removed > 0) {
       console.log(`Pruned ${removed} points, ${outputPoint} points remaining`);
+      
+      // Update all detection's associated points after pruning
+      detections.forEach(detection => {
+        if (detection.associatedPoints && detection.associatedPoints.length > 0) {
+          // Create new array with updated indices, filtering out removed points
+          const updatedPoints = [];
+          for (const oldPointIndex of detection.associatedPoints) {
+            const newPointIndex = pointIndexMap.get(oldPointIndex);
+            if (newPointIndex !== undefined) {
+              updatedPoints.push(newPointIndex);
+            }
+          }
+          detection.associatedPoints = updatedPoints;
+          console.log(`Detection "${detection.label}" now has ${updatedPoints.length} associated points after pruning`);
+        }
+      });
     }
     
     pointCountRef.current = outputPoint;
+  };
+  
+  // Update detection bounding boxes based on tracking point movement
+  const updateDetectionBoxes = () => {
+    detections.forEach(detection => {
+      if (!detection.associatedPoints || detection.associatedPoints.length === 0) {
+        return; // Skip if no associated points
+      }
+      
+      // Calculate average displacement of all associated points
+      let totalDeltaX = 0;
+      let totalDeltaY = 0;
+      let validPoints = 0;
+      
+      for (const pointIndex of detection.associatedPoints) {
+        // Skip if point index is out of bounds (might happen if points were pruned)
+        if (pointIndex >= pointCountRef.current) continue;
+        
+        const currentX = curxyRef.current[pointIndex * 2];
+        const currentY = curxyRef.current[pointIndex * 2 + 1];
+        const origX = origxyRef.current[pointIndex * 2];
+        const origY = origxyRef.current[pointIndex * 2 + 1];
+        
+        // Calculate displacement from original position
+        const deltaX = currentX - origX;
+        const deltaY = currentY - origY;
+        
+        totalDeltaX += deltaX;
+        totalDeltaY += deltaY;
+        validPoints++;
+      }
+      
+      // Only update if we have valid points to consider
+      if (validPoints > 0) {
+        // Calculate average displacement
+        const avgDeltaX = totalDeltaX / validPoints;
+        const avgDeltaY = totalDeltaY / validPoints;
+        
+        // Update the box position based on the average displacement
+        detection.box.xMin = detection.initialBox.xMin + avgDeltaX;
+        detection.box.yMin = detection.initialBox.yMin + avgDeltaY;
+        detection.box.xMax = detection.initialBox.xMax + avgDeltaX;
+        detection.box.yMax = detection.initialBox.yMax + avgDeltaY;
+        
+        // Update the center point as well
+        detection.x = ((detection.box.xMin + detection.box.xMax) / 2);
+        detection.y = ((detection.box.yMin + detection.box.yMax) / 2);
+      }
+    });
   };
   
   // Initialize canvas contexts
