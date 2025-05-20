@@ -397,16 +397,6 @@ export default function CameraTracker() {
             detection.box.xMin + 5, 
             detection.box.yMin - textHeight + 5
           );
-          
-          // Optionally display the number of associated points
-          if (showPointsDebugRef.current && detection.associatedPoints && detection.associatedPoints.length > 0) {
-            const pointText = `${detection.associatedPoints.length} points`;
-            ctx.fillText(
-              pointText,
-              detection.box.xMin + 5,
-              detection.box.yMax + 5
-            );
-          }
         }
       }
     });
