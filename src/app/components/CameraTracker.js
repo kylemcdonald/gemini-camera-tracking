@@ -25,7 +25,8 @@ export default function CameraTracker() {
   const pointStatusRef = useRef(null);
   const prevxyRef = useRef(null);
   const curxyRef = useRef(null);
-  const maxPoints = 100;
+  const origxyRef = useRef(null);
+  const maxPoints = 1000;
   
   // Initialize camera
   const startCamera = async () => {
@@ -71,6 +72,56 @@ export default function CameraTracker() {
     pointCountRef.current = 0;
   };
   
+  // Initialize tracking points in a grid pattern
+  const initializeTrackingPointGrid = () => {
+    if (!canvasRef.current || !ctxRef.current) return;
+    
+    // Clear existing tracking points first
+    clearTrackingPoints();
+    
+    const canvas = canvasRef.current;
+    
+    // Calculate grid dimensions
+    // Aim for a reasonable number of points (e.g., 30x20 grid = 600 points)
+    const gridCols = 30;
+    const gridRows = 20;
+    const totalPoints = gridCols * gridRows;
+    
+    // Calculate spacing
+    const spacingX = canvas.width / (gridCols + 1);
+    const spacingY = canvas.height / (gridRows + 1);
+    
+    // Add grid points to tracking system
+    let pointIndex = 0;
+    for (let row = 1; row <= gridRows; row++) {
+      for (let col = 1; col <= gridCols; col++) {
+        // Calculate point coordinates
+        const x = spacingX * col;
+        const y = spacingY * row;
+        
+        // Add to tracking arrays
+        curxyRef.current[pointIndex * 2] = x;
+        curxyRef.current[pointIndex * 2 + 1] = y;
+        prevxyRef.current[pointIndex * 2] = x;
+        prevxyRef.current[pointIndex * 2 + 1] = y;
+        origxyRef.current[pointIndex * 2] = x;
+        origxyRef.current[pointIndex * 2 + 1] = y;
+        
+        pointIndex++;
+        
+        // Safety check to not exceed maxPoints
+        if (pointIndex >= maxPoints) break;
+      }
+      // Safety check to not exceed maxPoints
+      if (pointIndex >= maxPoints) break;
+    }
+    
+    // Update point count
+    pointCountRef.current = Math.min(totalPoints, maxPoints);
+    
+    console.log(`Created grid of ${pointCountRef.current} tracking points (${gridCols}x${gridRows})`);
+  };
+  
   // Handle canvas click to add tracking points
   const handleCanvasClick = (event) => {
     if (pointCountRef.current < maxPoints && canvasRef.current) {
@@ -83,6 +134,10 @@ export default function CameraTracker() {
       const pointIndex = pointCountRef.current * 2;
       curxyRef.current[pointIndex] = x;
       curxyRef.current[pointIndex + 1] = y;
+      prevxyRef.current[pointIndex] = x;
+      prevxyRef.current[pointIndex + 1] = y;
+      origxyRef.current[pointIndex] = x;
+      origxyRef.current[pointIndex + 1] = y;
       
       // Increment point count
       pointCountRef.current++;
@@ -97,6 +152,9 @@ export default function CameraTracker() {
     
     try {
       setIsLoading(true);
+      
+      // Initialize tracking point grid when detecting objects
+      initializeTrackingPointGrid();
       
       // Capture current frame from clean canvas
       const imageData = cleanCanvasRef.current.toDataURL('image/jpeg');
@@ -126,27 +184,28 @@ export default function CameraTracker() {
         throw new Error(detections.error);
       }
       
-      // Add bounding boxes and labels gradually with a delay
-      detections.forEach((detection, index) => {
-        setTimeout(() => {
-          const [yMin, xMin, yMax, xMax] = detection.box_2d;
-          // Calculate center point for text placement
-          const centerX = ((xMin + xMax) / 2 / 1000) * canvasRef.current.width;
-          const centerY = ((yMin + yMax) / 2 / 1000) * canvasRef.current.height;
-          
-          setDetections(prev => [...prev, {
-            x: centerX,
-            y: centerY,
-            label: detection.label,
-            box: {
-              xMin: (xMin / 1000) * canvasRef.current.width,
-              yMin: (yMin / 1000) * canvasRef.current.height,
-              xMax: (xMax / 1000) * canvasRef.current.width,
-              yMax: (yMax / 1000) * canvasRef.current.height
-            }
-          }]);
-        }, index * 1000);
+      // Process all detections at once
+      const processedDetections = detections.map(detection => {
+        const [yMin, xMin, yMax, xMax] = detection.box_2d;
+        // Calculate center point for text placement
+        const centerX = ((xMin + xMax) / 2 / 1000) * canvasRef.current.width;
+        const centerY = ((yMin + yMax) / 2 / 1000) * canvasRef.current.height;
+        
+        return {
+          x: centerX,
+          y: centerY,
+          label: detection.label,
+          box: {
+            xMin: (xMin / 1000) * canvasRef.current.width,
+            yMin: (yMin / 1000) * canvasRef.current.height,
+            xMax: (xMax / 1000) * canvasRef.current.width,
+            yMax: (yMax / 1000) * canvasRef.current.height
+          }
+        };
       });
+
+      // Set all detections at once
+      setDetections(processedDetections);
     } catch (error) {
       console.error('Error calling API:', error);
     } finally {
@@ -228,15 +287,42 @@ export default function CameraTracker() {
       trackPoints(canvas);
     }
     
-    // Draw detections with labels only on the visible canvas
-    ctx.font = '32px Arial';
-    ctx.fillStyle = 'white';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    // Draw detections with rectangles and labels
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
     
-    detections.forEach(point => {
-      if (point.label) {
-        ctx.fillText(point.label, point.x, point.y);
+    detections.forEach(detection => {
+      if (detection.box) {
+        // Draw the bounding box rectangle
+        ctx.strokeStyle = 'rgba(0, 255, 255, 0.8)';
+        ctx.lineWidth = 3;
+        const boxWidth = detection.box.xMax - detection.box.xMin;
+        const boxHeight = detection.box.yMax - detection.box.yMin;
+        ctx.strokeRect(detection.box.xMin, detection.box.yMin, boxWidth, boxHeight);
+        
+        // Add a semi-transparent background for the label
+        if (detection.label) {
+          const textMetrics = ctx.measureText(detection.label);
+          const textWidth = textMetrics.width;
+          const textHeight = 30; // Approximate height based on font size
+          
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(
+            detection.box.xMin, 
+            detection.box.yMin - textHeight, 
+            textWidth + 10, 
+            textHeight
+          );
+          
+          // Draw the label text above the box
+          ctx.fillStyle = 'white';
+          ctx.fillText(
+            detection.label, 
+            detection.box.xMin + 5, 
+            detection.box.yMin - textHeight + 5
+          );
+        }
       }
     });
     
@@ -267,15 +353,38 @@ export default function CameraTracker() {
       }
       ctx.stroke();
       
+      // Draw lines from original position to current position
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 165, 0, 0.4)'; // Orange with lower opacity
+      ctx.lineWidth = 1;
+      
+      for (let i = 0; i < pointCountRef.current; i++) {
+        const curX = curxyRef.current[i * 2];
+        const curY = curxyRef.current[i * 2 + 1];
+        const origX = origxyRef.current[i * 2];
+        const origY = origxyRef.current[i * 2 + 1];
+        
+        // Only draw the line if the current position differs from original
+        const distanceFromOrigin = Math.sqrt(Math.pow(curX - origX, 2) + Math.pow(curY - origY, 2));
+        if (distanceFromOrigin > 2) {
+          ctx.moveTo(origX, origY);
+          ctx.lineTo(curX, curY);
+        }
+      }
+      ctx.stroke();
+      
       // Draw the points themselves with different styles based on their motion
       for (let i = 0; i < pointCountRef.current; i++) {
         const x = curxyRef.current[i * 2];
         const y = curxyRef.current[i * 2 + 1];
         const prevX = prevxyRef.current[i * 2];
         const prevY = prevxyRef.current[i * 2 + 1];
+        const origX = origxyRef.current[i * 2];
+        const origY = origxyRef.current[i * 2 + 1];
         
         // Calculate point velocity/motion speed
         const distance = Math.sqrt(Math.pow(x - prevX, 2) + Math.pow(y - prevY, 2));
+        const distanceFromOrigin = Math.sqrt(Math.pow(x - origX, 2) + Math.pow(y - origY, 2));
         
         // Adjust point size and color based on motion
         const pointSize = Math.min(8, 4 + distance / 2);
@@ -312,6 +421,14 @@ export default function CameraTracker() {
         ctx.arc(x, y, pointSize / 2, 0, 2 * Math.PI);
         ctx.fill();
         ctx.stroke();
+        
+        // Draw original position marker if point has moved from its origin
+        if (distanceFromOrigin > 2) {
+          ctx.fillStyle = 'rgba(255, 165, 0, 0.6)'; // Orange with transparency
+          ctx.beginPath();
+          ctx.arc(origX, origY, 3, 0, 2 * Math.PI);
+          ctx.fill();
+        }
       }
     }
     
@@ -389,6 +506,10 @@ export default function CameraTracker() {
           const outputIndex = outputPoint * 2;
           curxyRef.current[outputIndex] = curxyRef.current[inputIndex];
           curxyRef.current[outputIndex + 1] = curxyRef.current[inputIndex + 1];
+          prevxyRef.current[outputIndex] = prevxyRef.current[inputIndex];
+          prevxyRef.current[outputIndex + 1] = prevxyRef.current[inputIndex + 1];
+          origxyRef.current[outputIndex] = origxyRef.current[inputIndex];
+          origxyRef.current[outputIndex + 1] = origxyRef.current[inputIndex + 1];
         }
         outputPoint++;
       } else {
@@ -443,6 +564,7 @@ export default function CameraTracker() {
     pointStatusRef.current = new Uint8Array(maxPoints);
     prevxyRef.current = new Float32Array(maxPoints * 2);
     curxyRef.current = new Float32Array(maxPoints * 2);
+    origxyRef.current = new Float32Array(maxPoints * 2);
   };
   
   // Start animation loop when camera is active
@@ -511,6 +633,12 @@ export default function CameraTracker() {
                 className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
               >
                 <span className="material-icons">location_off</span>
+              </button>
+              <button 
+                onClick={initializeTrackingPointGrid}
+                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              >
+                <span className="material-icons">grid_on</span>
               </button>
               <button 
                 onClick={prunePoints}
