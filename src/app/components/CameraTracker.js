@@ -10,6 +10,7 @@ export default function CameraTracker() {
   const [searchPrompt, setSearchPrompt] = useState('parts of the face');
   const [labelPrompt, setLabelPrompt] = useState('a representative emoji');
   const [isLoading, setIsLoading] = useState(false);
+  const [showPointsDebug, setShowPointsDebug] = useState(true);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -20,6 +21,7 @@ export default function CameraTracker() {
   const animationFrameIdRef = useRef(null);
   const detectionsRef = useRef([]);
   const facingModeRef = useRef('user');
+  const showPointsDebugRef = useRef(true);
   
   // jsfeat point tracking refs
   const curpyrRef = useRef(null);
@@ -39,6 +41,10 @@ export default function CameraTracker() {
   useEffect(() => {
     facingModeRef.current = facingMode;
   }, [facingMode]);
+  
+  useEffect(() => {
+    showPointsDebugRef.current = showPointsDebug;
+  }, [showPointsDebug]);
   
   // Initialize camera
   const startCamera = async () => {
@@ -393,7 +399,7 @@ export default function CameraTracker() {
           );
           
           // Optionally display the number of associated points
-          if (detection.associatedPoints && detection.associatedPoints.length > 0) {
+          if (showPointsDebugRef.current && detection.associatedPoints && detection.associatedPoints.length > 0) {
             const pointText = `${detection.associatedPoints.length} points`;
             ctx.fillText(
               pointText,
@@ -405,8 +411,8 @@ export default function CameraTracker() {
       }
     });
     
-    // Draw tracking points with enhanced visualization
-    if (pointCountRef.current > 0) {
+    // Draw tracking points with enhanced visualization only if debug display is enabled
+    if (pointCountRef.current > 0 && showPointsDebugRef.current) {
       // Log number of points being drawn periodically (every 60 frames to avoid console spam)
       if (Math.random() < 0.01) {
         console.log(`Drawing ${pointCountRef.current} tracking points`);
@@ -882,6 +888,12 @@ export default function CameraTracker() {
                 className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
               >
                 <span className="material-icons">filter_list</span>
+              </button>
+              <button 
+                onClick={() => setShowPointsDebug(prev => !prev)}
+                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              >
+                <span className="material-icons">{showPointsDebug ? 'visibility_off' : 'visibility'}</span>
               </button>
             </>
           )}
