@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import jsfeat from 'jsfeat';
 
 export default function CameraTracker() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState('user');
-  const [points, setPoints] = useState([]);
+  const [detections, setDetections] = useState([]);
   const [searchPrompt, setSearchPrompt] = useState('parts of the face');
   const [labelPrompt, setLabelPrompt] = useState('a representative emoji');
   const [isLoading, setIsLoading] = useState(false);
@@ -16,6 +17,15 @@ export default function CameraTracker() {
   const streamRef = useRef(null);
   const ctxRef = useRef(null);
   const cleanCtxRef = useRef(null);
+  
+  // jsfeat point tracking refs
+  const curpyrRef = useRef(null);
+  const prevpyrRef = useRef(null);
+  const pointCountRef = useRef(0);
+  const pointStatusRef = useRef(null);
+  const prevxyRef = useRef(null);
+  const curxyRef = useRef(null);
+  const maxPoints = 100;
   
   // Initialize camera
   const startCamera = async () => {
@@ -51,36 +61,34 @@ export default function CameraTracker() {
     setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
   };
   
-  // Clear points
-  const clearPoints = () => {
-    setPoints([]);
+  // Clear detections
+  const clearDetections = () => {
+    setDetections([]);
   };
   
-  // Add point on canvas click
-  const addPoint = (e) => {
-    if (!canvasRef.current) return;
-    
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    setPoints(prev => [...prev, { x, y }]);
+  // Clear tracking points
+  const clearTrackingPoints = () => {
+    pointCountRef.current = 0;
   };
   
-  // Handle canvas click
-  const handleCanvasClick = (e) => {
-    addPoint(e);
-  };
-  
-  // Handle canvas touch
-  const handleCanvasTouch = (e) => {
-    e.preventDefault();
-    const touch = e.touches[0];
-    const mouseEvent = new MouseEvent('click', {
-      clientX: touch.clientX,
-      clientY: touch.clientY
-    });
-    addPoint(mouseEvent);
+  // Handle canvas click to add tracking points
+  const handleCanvasClick = (event) => {
+    if (pointCountRef.current < maxPoints && canvasRef.current) {
+      // Get click coordinates relative to the canvas
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      
+      // Add point to tracking array - only update curxy, not prevxy
+      const pointIndex = pointCountRef.current * 2;
+      curxyRef.current[pointIndex] = x;
+      curxyRef.current[pointIndex + 1] = y;
+      
+      // Increment point count
+      pointCountRef.current++;
+      
+      console.log(`Added tracking point at (${x}, ${y}), total: ${pointCountRef.current}`);
+    }
   };
   
   // Detect objects using the proxy endpoint
@@ -126,7 +134,7 @@ export default function CameraTracker() {
           const centerX = ((xMin + xMax) / 2 / 1000) * canvasRef.current.width;
           const centerY = ((yMin + yMax) / 2 / 1000) * canvasRef.current.height;
           
-          setPoints(prev => [...prev, {
+          setDetections(prev => [...prev, {
             x: centerX,
             y: centerY,
             label: detection.label,
@@ -215,20 +223,185 @@ export default function CameraTracker() {
     ctx.restore();
     cleanCtx.restore();
     
-    // Draw points with labels only on the visible canvas
+    // If we have points to track, process optical flow
+    if (pointCountRef.current > 0) {
+      trackPoints(canvas);
+    }
+    
+    // Draw detections with labels only on the visible canvas
     ctx.font = '32px Arial';
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
-    points.forEach(point => {
+    detections.forEach(point => {
       if (point.label) {
         ctx.fillText(point.label, point.x, point.y);
       }
     });
     
+    // Draw tracking points with enhanced visualization
+    if (pointCountRef.current > 0) {
+      // Log number of points being drawn periodically (every 60 frames to avoid console spam)
+      if (Math.random() < 0.01) {
+        console.log(`Drawing ${pointCountRef.current} tracking points`);
+      }
+      
+      // Draw lines connecting the previous and current points to show motion
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.6)';
+      ctx.lineWidth = 2;
+      
+      for (let i = 0; i < pointCountRef.current; i++) {
+        const curX = curxyRef.current[i * 2];
+        const curY = curxyRef.current[i * 2 + 1];
+        const prevX = prevxyRef.current[i * 2];
+        const prevY = prevxyRef.current[i * 2 + 1];
+        
+        // Only draw the line if the points have moved significantly
+        const distance = Math.sqrt(Math.pow(curX - prevX, 2) + Math.pow(curY - prevY, 2));
+        if (distance > 1) {
+          ctx.moveTo(prevX, prevY);
+          ctx.lineTo(curX, curY);
+        }
+      }
+      ctx.stroke();
+      
+      // Draw the points themselves with different styles based on their motion
+      for (let i = 0; i < pointCountRef.current; i++) {
+        const x = curxyRef.current[i * 2];
+        const y = curxyRef.current[i * 2 + 1];
+        const prevX = prevxyRef.current[i * 2];
+        const prevY = prevxyRef.current[i * 2 + 1];
+        
+        // Calculate point velocity/motion speed
+        const distance = Math.sqrt(Math.pow(x - prevX, 2) + Math.pow(y - prevY, 2));
+        
+        // Adjust point size and color based on motion
+        const pointSize = Math.min(8, 4 + distance / 2);
+        
+        // Draw outer glow based on motion
+        const glowSize = pointSize * 1.5;
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowSize);
+        
+        if (distance > 5) {
+          // Fast moving point - use yellow/orange
+          gradient.addColorStop(0, 'rgba(255, 255, 0, 0.8)');
+          gradient.addColorStop(1, 'rgba(255, 165, 0, 0)');
+        } else if (distance > 1) {
+          // Medium movement - use cyan
+          gradient.addColorStop(0, 'rgba(0, 255, 255, 0.8)');
+          gradient.addColorStop(1, 'rgba(0, 255, 255, 0)');
+        } else {
+          // Slow/stationary - use green
+          gradient.addColorStop(0, 'rgba(0, 255, 0, 0.8)');
+          gradient.addColorStop(1, 'rgba(0, 255, 0, 0)');
+        }
+        
+        // Draw the glow
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, glowSize, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Draw the actual point
+        ctx.fillStyle = 'white';
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(x, y, pointSize / 2, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    
     // Continue animation loop
     requestAnimationFrame(drawVideoToCanvas);
+  };
+  
+  // Track points between frames using optical flow
+  const trackPoints = (canvas) => {
+    if (!canvas || pointCountRef.current === 0) return;
+    
+    // Swap buffers first - current becomes previous for next frame
+    const xyswap = prevxyRef.current;
+    prevxyRef.current = curxyRef.current;
+    curxyRef.current = xyswap;
+    
+    const pyrswap = prevpyrRef.current;
+    prevpyrRef.current = curpyrRef.current;
+    curpyrRef.current = pyrswap;
+    
+    // These are options worth breaking out and exploring
+    const winSize = 20;
+    const maxIterations = 30;
+    const epsilon = 0.01;
+    const minEigen = 0.001;
+    
+    // Get grayscale image for current frame
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    // Convert to grayscale
+    jsfeat.imgproc.grayscale(imageData.data, canvas.width, canvas.height, curpyrRef.current.data[0]);
+    
+    // Build image pyramid for current frame
+    curpyrRef.current.build(curpyrRef.current.data[0], true);
+    
+    const point_status = new Uint8Array(100);
+    // Run Lucas-Kanade optical flow
+    jsfeat.optical_flow_lk.track(
+      prevpyrRef.current, // previous pyramid
+      curpyrRef.current,  // current pyramid
+      prevxyRef.current,  // previous points
+      curxyRef.current,   // current points
+      pointCountRef.current, // number of points
+      winSize,            // win_size
+      maxIterations,      // max_iterations
+      pointStatusRef.current, // status
+      epsilon,            // epsilon
+      minEigen            // min_eigen
+    );
+  };
+  
+  // Prune points that couldn't be tracked
+  const prunePoints = () => {
+    let outputPoint = 0;
+    let removed = 0;
+    
+    // Log all point positions and statuses before pruning
+    const pointDetails = [];
+    for (let i = 0; i < pointCountRef.current; i++) {
+      pointDetails.push({
+        point: i,
+        x: curxyRef.current[i * 2],
+        y: curxyRef.current[i * 2 + 1],
+        status: pointStatusRef.current[i]
+      });
+    }
+    console.log('Points before pruning:', pointDetails);
+    
+    for (let inputPoint = 0; inputPoint < pointCountRef.current; inputPoint++) {
+      // Status 1 means successfully tracked, anything else means couldn't track
+      if (pointStatusRef.current[inputPoint] === 1) {
+        if (outputPoint < inputPoint) {
+          const inputIndex = inputPoint * 2;
+          const outputIndex = outputPoint * 2;
+          curxyRef.current[outputIndex] = curxyRef.current[inputIndex];
+          curxyRef.current[outputIndex + 1] = curxyRef.current[inputIndex + 1];
+        }
+        outputPoint++;
+      } else {
+        removed++;
+      }
+    }
+    
+    // Log if we're removing points
+    if (removed > 0) {
+      console.log(`Pruned ${removed} points, ${outputPoint} points remaining`);
+    }
+    
+    pointCountRef.current = outputPoint;
   };
   
   // Initialize canvas contexts
@@ -244,6 +417,9 @@ export default function CameraTracker() {
           canvasRef.current.height = window.innerHeight;
           cleanCanvasRef.current.width = window.innerWidth;
           cleanCanvasRef.current.height = window.innerHeight;
+          
+          // Initialize jsfeat tracking when canvas is ready
+          initializeTracking(canvasRef.current.width, canvasRef.current.height);
         }
       };
       
@@ -256,12 +432,25 @@ export default function CameraTracker() {
     }
   }, []);
   
+  // Initialize jsfeat tracking variables
+  const initializeTracking = (w, h) => {
+    curpyrRef.current = new jsfeat.pyramid_t(3);
+    prevpyrRef.current = new jsfeat.pyramid_t(3);
+    curpyrRef.current.allocate(w, h, jsfeat.U8C1_t);
+    prevpyrRef.current.allocate(w, h, jsfeat.U8C1_t);
+    
+    pointCountRef.current = 0;
+    pointStatusRef.current = new Uint8Array(maxPoints);
+    prevxyRef.current = new Float32Array(maxPoints * 2);
+    curxyRef.current = new Float32Array(maxPoints * 2);
+  };
+  
   // Start animation loop when camera is active
   useEffect(() => {
     if (isCameraActive) {
       drawVideoToCanvas();
     }
-  }, [isCameraActive, points, facingMode]);
+  }, [isCameraActive, detections, facingMode]);
   
   // Clean up stream on unmount
   useEffect(() => {
@@ -284,7 +473,6 @@ export default function CameraTracker() {
         ref={canvasRef} 
         className="w-full h-full absolute top-0 left-0"
         onClick={handleCanvasClick}
-        onTouchStart={handleCanvasTouch}
       ></canvas>
       <canvas 
         ref={cleanCanvasRef} 
@@ -313,10 +501,22 @@ export default function CameraTracker() {
                 <span className="material-icons">flip_camera_ios</span>
               </button>
               <button 
-                onClick={clearPoints}
+                onClick={clearDetections}
                 className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
               >
                 <span className="material-icons">clear</span>
+              </button>
+              <button 
+                onClick={clearTrackingPoints}
+                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              >
+                <span className="material-icons">location_off</span>
+              </button>
+              <button 
+                onClick={prunePoints}
+                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              >
+                <span className="material-icons">filter_list</span>
               </button>
             </>
           )}
