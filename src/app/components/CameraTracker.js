@@ -17,6 +17,9 @@ export default function CameraTracker() {
   const streamRef = useRef(null);
   const ctxRef = useRef(null);
   const cleanCtxRef = useRef(null);
+  const animationFrameIdRef = useRef(null);
+  const detectionsRef = useRef([]);
+  const facingModeRef = useRef('user');
   
   // jsfeat point tracking refs
   const curpyrRef = useRef(null);
@@ -27,6 +30,15 @@ export default function CameraTracker() {
   const curxyRef = useRef(null);
   const origxyRef = useRef(null);
   const maxPoints = 1000;
+  
+  // Update refs when state changes
+  useEffect(() => {
+    detectionsRef.current = detections;
+  }, [detections]);
+
+  useEffect(() => {
+    facingModeRef.current = facingMode;
+  }, [facingMode]);
   
   // Initialize camera
   const startCamera = async () => {
@@ -120,6 +132,26 @@ export default function CameraTracker() {
     pointCountRef.current = Math.min(totalPoints, maxPoints);
     
     console.log(`Created grid of ${pointCountRef.current} tracking points (${gridCols}x${gridRows})`);
+    
+    // Re-associate points with existing detections based on current bounding box positions
+    if (detections.length > 0) {
+      // First clear all existing associations
+      detections.forEach(detection => {
+        detection.associatedPoints = [];
+        
+        // Update initialBox to match current box position
+        // This resets the reference point for tracking to the current position
+        detection.initialBox = {
+          xMin: detection.box.xMin,
+          yMin: detection.box.yMin,
+          xMax: detection.box.xMax,
+          yMax: detection.box.yMax
+        };
+      });
+      
+      // Then re-associate based on current positions
+      associatePointsWithDetections(detections);
+    }
   };
   
   // Handle canvas click to add tracking points
@@ -229,14 +261,15 @@ export default function CameraTracker() {
     
     for (const detection of detections) {
       for (let i = 0; i < pointCountRef.current; i++) {
-        const origX = origxyRef.current[i * 2];
-        const origY = origxyRef.current[i * 2 + 1];
+        // Use current point positions instead of original positions
+        const currentX = curxyRef.current[i * 2];
+        const currentY = curxyRef.current[i * 2 + 1];
         
-        // Check if the original point position is inside the bounding box
-        if (origX >= detection.box.xMin && 
-            origX <= detection.box.xMax && 
-            origY >= detection.box.yMin && 
-            origY <= detection.box.yMax) {
+        // Check if the current point position is inside the current bounding box
+        if (currentX >= detection.box.xMin && 
+            currentX <= detection.box.xMax && 
+            currentY >= detection.box.yMin && 
+            currentY <= detection.box.yMax) {
           // Associate this point with the detection
           detection.associatedPoints.push(i);
         }
@@ -280,7 +313,7 @@ export default function CameraTracker() {
     ctx.save();
     cleanCtx.save();
     
-    if (facingMode === 'user') {
+    if (facingModeRef.current === 'user') {
       ctx.scale(-1, 1);
       ctx.translate(-canvas.width, 0);
       cleanCtx.scale(-1, 1);
@@ -328,7 +361,7 @@ export default function CameraTracker() {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     
-    detections.forEach(detection => {
+    detectionsRef.current.forEach(detection => {
       if (detection.box) {
         // Draw the bounding box rectangle
         ctx.strokeStyle = 'rgba(0, 255, 255, 0.8)';
@@ -432,40 +465,29 @@ export default function CameraTracker() {
         const distance = Math.sqrt(Math.pow(x - prevX, 2) + Math.pow(y - prevY, 2));
         const distanceFromOrigin = Math.sqrt(Math.pow(x - origX, 2) + Math.pow(y - origY, 2));
         
-        // Adjust point size and color based on motion
+        // Adjust point size based on motion
         const pointSize = Math.min(8, 4 + distance / 2);
         
-        // Draw outer glow based on motion
-        const glowSize = pointSize * 1.5;
-        const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowSize);
-        
+        // Choose color based on motion speed
         if (distance > 5) {
-          // Fast moving point - use yellow/orange
-          gradient.addColorStop(0, 'rgba(255, 255, 0, 0.8)');
-          gradient.addColorStop(1, 'rgba(255, 165, 0, 0)');
+          // Fast moving point - use yellow
+          ctx.fillStyle = 'rgba(255, 255, 0, 0.8)';
         } else if (distance > 1) {
           // Medium movement - use cyan
-          gradient.addColorStop(0, 'rgba(0, 255, 255, 0.8)');
-          gradient.addColorStop(1, 'rgba(0, 255, 255, 0)');
+          ctx.fillStyle = 'rgba(0, 255, 255, 0.8)';
         } else {
           // Slow/stationary - use green
-          gradient.addColorStop(0, 'rgba(0, 255, 0, 0.8)');
-          gradient.addColorStop(1, 'rgba(0, 255, 0, 0)');
+          ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
         }
         
-        // Draw the glow
-        ctx.fillStyle = gradient;
+        // Draw the actual point
         ctx.beginPath();
-        ctx.arc(x, y, glowSize, 0, 2 * Math.PI);
+        ctx.arc(x, y, pointSize, 0, 2 * Math.PI);
         ctx.fill();
         
-        // Draw the actual point
-        ctx.fillStyle = 'white';
+        // Add outline to points
         ctx.strokeStyle = 'black';
         ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(x, y, pointSize / 2, 0, 2 * Math.PI);
-        ctx.fill();
         ctx.stroke();
         
         // Draw original position marker if point has moved from its origin
@@ -477,9 +499,6 @@ export default function CameraTracker() {
         }
       }
     }
-    
-    // Continue animation loop
-    requestAnimationFrame(drawVideoToCanvas);
   };
   
   // Track points between frames using optical flow
@@ -573,7 +592,7 @@ export default function CameraTracker() {
       console.log(`Pruned ${removed} points, ${outputPoint} points remaining`);
       
       // Update all detection's associated points after pruning
-      detections.forEach(detection => {
+      detectionsRef.current.forEach(detection => {
         if (detection.associatedPoints && detection.associatedPoints.length > 0) {
           // Create new array with updated indices, filtering out removed points
           const updatedPoints = [];
@@ -594,16 +613,23 @@ export default function CameraTracker() {
   
   // Update detection bounding boxes based on tracking point movement
   const updateDetectionBoxes = () => {
-    detections.forEach(detection => {
-      if (!detection.associatedPoints || detection.associatedPoints.length === 0) {
-        return; // Skip if no associated points
+    detectionsRef.current.forEach(detection => {
+      if (!detection.associatedPoints || detection.associatedPoints.length < 2) {
+        return; // Skip if no associated points or too few for standard deviation
       }
       
-      // Calculate average displacement of all associated points
+      // Variables for position tracking
       let totalDeltaX = 0;
       let totalDeltaY = 0;
       let validPoints = 0;
       
+      // Arrays to store current and original positions for standard deviation calculation
+      const currentXPositions = [];
+      const currentYPositions = [];
+      const originalXPositions = [];
+      const originalYPositions = [];
+      
+      // Process all associated points
       for (const pointIndex of detection.associatedPoints) {
         // Skip if point index is out of bounds (might happen if points were pruned)
         if (pointIndex >= pointCountRef.current) continue;
@@ -612,6 +638,12 @@ export default function CameraTracker() {
         const currentY = curxyRef.current[pointIndex * 2 + 1];
         const origX = origxyRef.current[pointIndex * 2];
         const origY = origxyRef.current[pointIndex * 2 + 1];
+        
+        // Store positions for standard deviation calculation
+        currentXPositions.push(currentX);
+        currentYPositions.push(currentY);
+        originalXPositions.push(origX);
+        originalYPositions.push(origY);
         
         // Calculate displacement from original position
         const deltaX = currentX - origX;
@@ -628,17 +660,81 @@ export default function CameraTracker() {
         const avgDeltaX = totalDeltaX / validPoints;
         const avgDeltaY = totalDeltaY / validPoints;
         
-        // Update the box position based on the average displacement
-        detection.box.xMin = detection.initialBox.xMin + avgDeltaX;
-        detection.box.yMin = detection.initialBox.yMin + avgDeltaY;
-        detection.box.xMax = detection.initialBox.xMax + avgDeltaX;
-        detection.box.yMax = detection.initialBox.yMax + avgDeltaY;
+        // Calculate standard deviations to determine scale change
+        const originalStdDevX = calculateStandardDeviation(originalXPositions);
+        const originalStdDevY = calculateStandardDeviation(originalYPositions);
+        const currentStdDevX = calculateStandardDeviation(currentXPositions);
+        const currentStdDevY = calculateStandardDeviation(currentYPositions);
+        
+        // Calculate scale factors with safeguards against division by zero
+        let scaleFactorX = 1;
+        let scaleFactorY = 1;
+        
+        if (originalStdDevX > 0 && currentStdDevX > 0) {
+          scaleFactorX = currentStdDevX / originalStdDevX;
+        }
+        
+        if (originalStdDevY > 0 && currentStdDevY > 0) {
+          scaleFactorY = currentStdDevY / originalStdDevY;
+        }
+        
+        // Limit scale factors to reasonable ranges to prevent extreme scaling
+        scaleFactorX = Math.max(0.5, Math.min(2.0, scaleFactorX));
+        scaleFactorY = Math.max(0.5, Math.min(2.0, scaleFactorY));
+        
+        // Calculate the current center point based on the initial center plus average movement
+        const centerX = ((detection.initialBox.xMin + detection.initialBox.xMax) / 2) + avgDeltaX;
+        const centerY = ((detection.initialBox.yMin + detection.initialBox.yMax) / 2) + avgDeltaY;
+        
+        // Calculate original width and height
+        const originalWidth = detection.initialBox.xMax - detection.initialBox.xMin;
+        const originalHeight = detection.initialBox.yMax - detection.initialBox.yMin;
+        
+        // Calculate scaled width and height
+        const scaledWidth = originalWidth * scaleFactorX;
+        const scaledHeight = originalHeight * scaleFactorY;
+        
+        // Update the box position and size, centered around the updated center point
+        detection.box.xMin = centerX - (scaledWidth / 2);
+        detection.box.xMax = centerX + (scaledWidth / 2);
+        detection.box.yMin = centerY - (scaledHeight / 2);
+        detection.box.yMax = centerY + (scaledHeight / 2);
         
         // Update the center point as well
-        detection.x = ((detection.box.xMin + detection.box.xMax) / 2);
-        detection.y = ((detection.box.yMin + detection.box.yMax) / 2);
+        detection.x = centerX;
+        detection.y = centerY;
+        
+        // Optionally log scale changes (only occasionally to avoid console spam)
+        if (Math.random() < 0.01) {
+          console.log(`Detection "${detection.label}" scale: X=${scaleFactorX.toFixed(2)}, Y=${scaleFactorY.toFixed(2)}`);
+        }
       }
     });
+  };
+  
+  // Helper function to calculate standard deviation of an array of values
+  const calculateStandardDeviation = (values) => {
+    const n = values.length;
+    if (n < 2) return 0; // Need at least 2 points to calculate std dev
+    
+    // Use Float64Array for better precision with numerical operations
+    const typedValues = new Float64Array(values);
+    
+    // Use numerically stable one-pass algorithm (Welford's online algorithm)
+    let mean = 0;
+    let M2 = 0;
+    
+    for (let i = 0; i < n; i++) {
+      const x = typedValues[i];
+      const delta = x - mean;
+      mean += delta / (i + 1);
+      const delta2 = x - mean;
+      M2 += delta * delta2;
+    }
+    
+    // Calculate variance and standard deviation
+    const variance = M2 / (n - 1); // Using n-1 for sample standard deviation
+    return Math.sqrt(variance);
   };
   
   // Initialize canvas contexts
@@ -685,10 +781,35 @@ export default function CameraTracker() {
   
   // Start animation loop when camera is active
   useEffect(() => {
-    if (isCameraActive) {
-      drawVideoToCanvas();
-    }
-  }, [isCameraActive, detections, facingMode]);
+    let animationFrameId = null;
+    
+    const startAnimationLoop = () => {
+      if (isCameraActive) {
+        // Cancel any existing animation frame first
+        if (animationFrameIdRef.current) {
+          cancelAnimationFrame(animationFrameIdRef.current);
+        }
+        
+        // Start a new animation loop
+        const animate = () => {
+          drawVideoToCanvas();
+          animationFrameIdRef.current = requestAnimationFrame(animate);
+        };
+        
+        animate();
+      }
+    };
+    
+    startAnimationLoop();
+    
+    // Clean up function
+    return () => {
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+    };
+  }, [isCameraActive]); // Only depend on isCameraActive
   
   // Clean up stream on unmount
   useEffect(() => {
