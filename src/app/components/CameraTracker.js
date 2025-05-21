@@ -7,10 +7,12 @@ export default function CameraTracker() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState('user');
   const [detections, setDetections] = useState([]);
-  const [searchPrompt, setSearchPrompt] = useState('parts of the face');
-  const [labelPrompt, setLabelPrompt] = useState('a representative emoji');
+  const [searchPrompt, setSearchPrompt] = useState('objects');
+  const [labelPrompt, setLabelPrompt] = useState('a silly name');
   const [isLoading, setIsLoading] = useState(false);
-  const [showPointsDebug, setShowPointsDebug] = useState(true);
+  const [showPointsDebug, setShowPointsDebug] = useState(false);
+  const [trackSizeChanges, setTrackSizeChanges] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -22,6 +24,8 @@ export default function CameraTracker() {
   const detectionsRef = useRef([]);
   const facingModeRef = useRef('user');
   const showPointsDebugRef = useRef(true);
+  const trackSizeChangesRef = useRef(true);
+  const lastVideoTimeRef = useRef(-1); // Track the last processed video timestamp
   
   // jsfeat point tracking refs
   const curpyrRef = useRef(null);
@@ -46,6 +50,10 @@ export default function CameraTracker() {
     showPointsDebugRef.current = showPointsDebug;
   }, [showPointsDebug]);
   
+  useEffect(() => {
+    trackSizeChangesRef.current = trackSizeChanges;
+  }, [trackSizeChanges]);
+  
   // Initialize camera
   const startCamera = async () => {
     try {
@@ -53,31 +61,54 @@ export default function CameraTracker() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
       
+      // Simplified camera constraints that work better across devices
       const constraints = {
         video: {
           facingMode: facingMode,
-          width: { ideal: window.innerWidth },
-          height: { ideal: window.innerHeight }
+          // Use reasonable resolution that works across devices
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       };
       
+      console.log("Starting camera with constraints:", constraints);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.style.display = 'none';
+        
+        // Make sure video starts playing
+        try {
+          await videoRef.current.play();
+          console.log("Video playback started successfully");
+        } catch (playErr) {
+          console.error("Error starting video playback:", playErr);
+        }
       }
       
       setIsCameraActive(true);
+      console.log("Camera successfully activated");
     } catch (err) {
       console.error('Error accessing camera:', err);
+      alert(`Camera error: ${err.name} - ${err.message}`);
     }
   };
   
   // Flip camera
   const flipCamera = () => {
-    setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
+    const newFacingMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newFacingMode);
+    
+    // Restart the camera with the new facing mode
+    if (streamRef.current) {
+      // Stop all tracks in the current stream
+      streamRef.current.getTracks().forEach(track => track.stop());
+      
+      // We'll restart the camera in the useEffect that depends on facingMode
+      console.log(`Switching camera to ${newFacingMode} mode`);
+    }
   };
   
   // Clear detections
@@ -295,27 +326,47 @@ export default function CameraTracker() {
     const cleanCanvas = cleanCanvasRef.current;
     const cleanCtx = cleanCtxRef.current;
     
-    // Calculate crop dimensions
+    // Skip drawing if video dimensions aren't ready yet
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      return;
+    }
+    
+    // Check if we have a new video frame by comparing the currentTime
+    const isNewFrame = video.currentTime !== lastVideoTimeRef.current;
+    
+    // Log dimensions occasionally for debugging
+    if (Math.random() < 0.01) { // Only log 1% of the time to avoid console spam
+      console.log(`Video dimensions: ${video.videoWidth}x${video.videoHeight}`);
+      console.log(`Canvas dimensions: ${canvas.width}x${canvas.height}`);
+      console.log(`Current video time: ${video.currentTime}, Last time: ${lastVideoTimeRef.current}, New frame: ${isNewFrame}`);
+    }
+    
+    // Calculate aspect ratios
     const videoRatio = video.videoWidth / video.videoHeight;
     const canvasRatio = canvas.width / canvas.height;
     
     let width, height, offsetX = 0, offsetY = 0;
     
+    // Always use "contain" approach - calculate dimensions to fill canvas while maintaining aspect ratio
     if (canvasRatio > videoRatio) {
-      width = canvas.width;
-      height = canvas.width / videoRatio;
-      offsetY = (height - canvas.height) / -2;
-    } else {
+      // Canvas is wider than video - height is limiting factor
       height = canvas.height;
-      width = canvas.height * videoRatio;
-      offsetX = (width - canvas.width) / -2;
+      width = height * videoRatio;
+      offsetX = (canvas.width - width) / 2;
+      offsetY = 0;
+    } else {
+      // Canvas is taller than video or same ratio - width is limiting factor
+      width = canvas.width;
+      height = width / videoRatio;
+      offsetX = 0;
+      offsetY = (canvas.height - height) / 2;
     }
     
     // Clear both canvases
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     cleanCtx.clearRect(0, 0, cleanCanvas.width, cleanCanvas.height);
     
-    // Draw video frame with cropping on both canvases
+    // Draw video frame with corrected dimensions
     ctx.save();
     cleanCtx.save();
     
@@ -326,41 +377,62 @@ export default function CameraTracker() {
       cleanCtx.translate(-cleanCanvas.width, 0);
     }
     
-    // Draw the cropped video on both canvases
-    ctx.drawImage(
-      video,
-      offsetX < 0 ? -offsetX / (width / video.videoWidth) : 0,
-      offsetY < 0 ? -offsetY / (height / video.videoHeight) : 0,
-      video.videoWidth,
-      video.videoHeight,
-      offsetX > 0 ? offsetX : 0,
-      offsetY > 0 ? offsetY : 0,
-      width,
-      height
-    );
+    // For debugging - draw background to show canvas boundaries
+    if (Math.random() < 0.005) { // Very occasionally
+      ctx.fillStyle = 'rgba(0, 0, 255, 0.2)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     
-    cleanCtx.drawImage(
-      video,
-      offsetX < 0 ? -offsetX / (width / video.videoWidth) : 0,
-      offsetY < 0 ? -offsetY / (height / video.videoHeight) : 0,
-      video.videoWidth,
-      video.videoHeight,
-      offsetX > 0 ? offsetX : 0,
-      offsetY > 0 ? offsetY : 0,
-      width,
-      height
-    );
+    // Draw the video with explicit control over destination width/height
+    if (facingModeRef.current === 'user') {
+      // When mirrored, need to adjust x position
+      ctx.drawImage(
+        video,
+        canvas.width - width - offsetX,
+        offsetY,
+        width,
+        height
+      );
+      
+      cleanCtx.drawImage(
+        video,
+        cleanCanvas.width - width - offsetX,
+        offsetY,
+        width,
+        height
+      );
+    } else {
+      // Normal (non-mirrored) rendering
+      ctx.drawImage(
+        video,
+        offsetX,
+        offsetY,
+        width,
+        height
+      );
+      
+      cleanCtx.drawImage(
+        video,
+        offsetX,
+        offsetY,
+        width,
+        height
+      );
+    }
     
     ctx.restore();
     cleanCtx.restore();
     
-    // If we have points to track, process optical flow
-    if (pointCountRef.current > 0) {
+    // If we have points to track, and this is a new frame, process optical flow
+    if (pointCountRef.current > 0 && isNewFrame) {
       trackPoints(canvas);
+      
+      // Update bounding box positions based on associated tracking points
+      updateDetectionBoxes();
+      
+      // Update last video time after processing
+      lastVideoTimeRef.current = video.currentTime;
     }
-    
-    // Update bounding box positions based on associated tracking points
-    updateDetectionBoxes();
     
     // Draw detections with rectangles and labels
     ctx.font = '24px Arial';
@@ -404,9 +476,9 @@ export default function CameraTracker() {
     // Draw tracking points with enhanced visualization only if debug display is enabled
     if (pointCountRef.current > 0 && showPointsDebugRef.current) {
       // Log number of points being drawn periodically (every 60 frames to avoid console spam)
-      if (Math.random() < 0.01) {
-        console.log(`Drawing ${pointCountRef.current} tracking points`);
-      }
+      // if (Math.random() < 0.01) {
+      //   console.log(`Drawing ${pointCountRef.current} tracking points`);
+      // }
       
       // Draw lines connecting the previous and current points to show motion
       ctx.beginPath();
@@ -636,10 +708,12 @@ export default function CameraTracker() {
         const origY = origxyRef.current[pointIndex * 2 + 1];
         
         // Store positions for standard deviation calculation
-        currentXPositions.push(currentX);
-        currentYPositions.push(currentY);
-        originalXPositions.push(origX);
-        originalYPositions.push(origY);
+        if (trackSizeChangesRef.current) {
+          currentXPositions.push(currentX);
+          currentYPositions.push(currentY);
+          originalXPositions.push(origX);
+          originalYPositions.push(origY);
+        }
         
         // Calculate displacement from original position
         const deltaX = currentX - origX;
@@ -656,27 +730,31 @@ export default function CameraTracker() {
         const avgDeltaX = totalDeltaX / validPoints;
         const avgDeltaY = totalDeltaY / validPoints;
         
-        // Calculate standard deviations to determine scale change
-        const originalStdDevX = calculateStandardDeviation(originalXPositions);
-        const originalStdDevY = calculateStandardDeviation(originalYPositions);
-        const currentStdDevX = calculateStandardDeviation(currentXPositions);
-        const currentStdDevY = calculateStandardDeviation(currentYPositions);
-        
-        // Calculate scale factors with safeguards against division by zero
+        // Set default scale factors (no size change)
         let scaleFactorX = 1;
         let scaleFactorY = 1;
         
-        if (originalStdDevX > 0 && currentStdDevX > 0) {
-          scaleFactorX = currentStdDevX / originalStdDevX;
+        // Only calculate scale factors if size tracking is enabled
+        if (trackSizeChangesRef.current && currentXPositions.length >= 2) {
+          // Calculate standard deviations to determine scale change
+          const originalStdDevX = calculateStandardDeviation(originalXPositions);
+          const originalStdDevY = calculateStandardDeviation(originalYPositions);
+          const currentStdDevX = calculateStandardDeviation(currentXPositions);
+          const currentStdDevY = calculateStandardDeviation(currentYPositions);
+          
+          // Calculate scale factors with safeguards against division by zero
+          if (originalStdDevX > 0 && currentStdDevX > 0) {
+            scaleFactorX = currentStdDevX / originalStdDevX;
+          }
+          
+          if (originalStdDevY > 0 && currentStdDevY > 0) {
+            scaleFactorY = currentStdDevY / originalStdDevY;
+          }
+          
+          // Limit scale factors to reasonable ranges to prevent extreme scaling
+          scaleFactorX = Math.max(0.5, Math.min(2.0, scaleFactorX));
+          scaleFactorY = Math.max(0.5, Math.min(2.0, scaleFactorY));
         }
-        
-        if (originalStdDevY > 0 && currentStdDevY > 0) {
-          scaleFactorY = currentStdDevY / originalStdDevY;
-        }
-        
-        // Limit scale factors to reasonable ranges to prevent extreme scaling
-        scaleFactorX = Math.max(0.5, Math.min(2.0, scaleFactorX));
-        scaleFactorY = Math.max(0.5, Math.min(2.0, scaleFactorY));
         
         // Calculate the current center point based on the initial center plus average movement
         const centerX = ((detection.initialBox.xMin + detection.initialBox.xMax) / 2) + avgDeltaX;
@@ -699,11 +777,6 @@ export default function CameraTracker() {
         // Update the center point as well
         detection.x = centerX;
         detection.y = centerY;
-        
-        // Optionally log scale changes (only occasionally to avoid console spam)
-        if (Math.random() < 0.01) {
-          console.log(`Detection "${detection.label}" scale: X=${scaleFactorX.toFixed(2)}, Y=${scaleFactorY.toFixed(2)}`);
-        }
       }
     });
   };
@@ -777,22 +850,26 @@ export default function CameraTracker() {
   
   // Start animation loop when camera is active
   useEffect(() => {
-    let animationFrameId = null;
+    let videoFrameCallbackId = null;
     
     const startAnimationLoop = () => {
-      if (isCameraActive) {
-        // Cancel any existing animation frame first
-        if (animationFrameIdRef.current) {
-          cancelAnimationFrame(animationFrameIdRef.current);
+      if (isCameraActive && videoRef.current) {
+        // Cancel any existing video callback
+        if (videoFrameCallbackId && 'cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+          videoRef.current.cancelVideoFrameCallback(videoFrameCallbackId);
         }
         
-        // Start a new animation loop
-        const animate = () => {
+        console.log("Using requestVideoFrameCallback for frame-exact rendering");
+        
+        // This will only be called when a new video frame is available
+        const processVideoFrame = (now, metadata) => {
           drawVideoToCanvas();
-          animationFrameIdRef.current = requestAnimationFrame(animate);
+          // Request the next frame
+          videoFrameCallbackId = videoRef.current.requestVideoFrameCallback(processVideoFrame);
         };
         
-        animate();
+        // Start the video frame callback loop
+        videoFrameCallbackId = videoRef.current.requestVideoFrameCallback(processVideoFrame);
       }
     };
     
@@ -800,12 +877,18 @@ export default function CameraTracker() {
     
     // Clean up function
     return () => {
-      if (animationFrameIdRef.current) {
-        cancelAnimationFrame(animationFrameIdRef.current);
-        animationFrameIdRef.current = null;
+      if (videoFrameCallbackId && videoRef.current) {
+        videoRef.current.cancelVideoFrameCallback(videoFrameCallbackId);
       }
     };
   }, [isCameraActive]); // Only depend on isCameraActive
+  
+  // Add effect to restart camera when facingMode changes
+  useEffect(() => {
+    if (isCameraActive) {
+      startCamera();
+    }
+  }, [facingMode]);
   
   // Clean up stream on unmount
   useEffect(() => {
@@ -816,12 +899,31 @@ export default function CameraTracker() {
     };
   }, []);
 
+  // Check if device is mobile
+  useEffect(() => {
+    const checkIsMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    
+    // Initial check
+    checkIsMobile();
+    
+    // Add event listener for resize
+    window.addEventListener('resize', checkIsMobile);
+    
+    // Cleanup
+    return () => {
+      window.removeEventListener('resize', checkIsMobile);
+    };
+  }, []);
+
   return (
     <div className="camera-container relative">
       <video 
         ref={videoRef} 
         playsInline 
         autoPlay 
+        muted // Add muted to ensure autoplay works on mobile
         className="hidden"
       ></video>
       <canvas 
@@ -834,14 +936,35 @@ export default function CameraTracker() {
         className="hidden"
       ></canvas>
       
-      <div className="controls-container absolute bottom-4 left-0 right-0 flex flex-col items-center">
-        <div className="button-container flex space-x-4 mb-4">
+      {/* Move controls to top instead of bottom */}
+      <div className="controls-container absolute top-4 left-0 right-0 flex flex-col items-center px-2 z-10">
+        {/* Put input fields first (at the very top) */}
+        <div className="input-container flex flex-col sm:flex-row gap-2 w-full max-w-md px-2 mb-4">
+          <input 
+            type="text" 
+            value={searchPrompt}
+            onChange={(e) => setSearchPrompt(e.target.value)}
+            className="flex-1 p-2 rounded border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black bg-white"
+            placeholder="What to detect"
+          />
+          <input 
+            type="text" 
+            value={labelPrompt}
+            onChange={(e) => setLabelPrompt(e.target.value)}
+            className="flex-1 p-2 rounded border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black bg-white"
+            placeholder="Label instruction"
+          />
+        </div>
+        
+        {/* Then buttons */}
+        <div className="button-container flex flex-wrap justify-center gap-2 mb-4 max-w-full">
           {isCameraActive && (
             <>
               <button 
                 onClick={detectObjects}
                 disabled={isLoading}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:opacity-50"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:opacity-50"
+                title="Detect Objects"
               >
                 {isLoading ? (
                   <span className="material-icons rotating">sync</span>
@@ -849,69 +972,68 @@ export default function CameraTracker() {
                   <span className="material-icons">search</span>
                 )}
               </button>
-              <button 
-                onClick={flipCamera}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
-              >
-                <span className="material-icons">flip_camera_ios</span>
-              </button>
+              {isMobile && (
+                <button 
+                  onClick={flipCamera}
+                  className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                  title="Switch Camera"
+                >
+                  <span className="material-icons">flip_camera_ios</span>
+                </button>
+              )}
               <button 
                 onClick={clearDetections}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title="Clear Detections"
               >
                 <span className="material-icons">clear</span>
               </button>
-              <button 
+              {/* <button 
                 onClick={clearTrackingPoints}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title="Clear Tracking Points"
               >
                 <span className="material-icons">location_off</span>
               </button>
               <button 
                 onClick={initializeTrackingPointGrid}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title="Initialize Tracking Grid"
               >
                 <span className="material-icons">grid_on</span>
               </button>
               <button 
                 onClick={prunePoints}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title="Prune Inactive Points"
               >
                 <span className="material-icons">filter_list</span>
-              </button>
+              </button> */}
               <button 
                 onClick={() => setShowPointsDebug(prev => !prev)}
-                className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title={showPointsDebug ? "Hide Tracking Points" : "Show Tracking Points"}
               >
                 <span className="material-icons">{showPointsDebug ? 'visibility_off' : 'visibility'}</span>
               </button>
+              {/* <button 
+                onClick={() => setTrackSizeChanges(prev => !prev)}
+                className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                title={trackSizeChanges ? "Disable Size Tracking" : "Enable Size Tracking"}
+              >
+                <span className="material-icons">{trackSizeChanges ? 'photo_size_select_small' : 'location_searching'}</span>
+              </button> */}
             </>
           )}
           {!isCameraActive && (
             <button 
               onClick={startCamera}
-              className="w-14 h-14 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              className="w-12 h-12 flex items-center justify-center bg-blue-500 text-white rounded-full hover:bg-blue-600"
+              title="Start Camera"
             >
               <span className="material-icons">videocam</span>
             </button>
           )}
-        </div>
-        
-        <div className="input-container flex space-x-4 w-full max-w-md">
-          <input 
-            type="text" 
-            value={searchPrompt}
-            onChange={(e) => setSearchPrompt(e.target.value)}
-            className="flex-1 p-2 rounded border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-            placeholder="What to detect"
-          />
-          <input 
-            type="text" 
-            value={labelPrompt}
-            onChange={(e) => setLabelPrompt(e.target.value)}
-            className="flex-1 p-2 rounded border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-            placeholder="Label instruction"
-          />
         </div>
       </div>
     </div>

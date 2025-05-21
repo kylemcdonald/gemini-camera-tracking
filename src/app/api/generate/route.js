@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const generationConfig = {
-  temperature: 0.7,
+  temperature: 0.5,
   topP: 0.95,
   topK: 40,
   maxOutputTokens: 8192,
